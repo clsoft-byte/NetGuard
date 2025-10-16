@@ -1,0 +1,252 @@
+# ============================================
+# ANDROID .GITIGNORE - Completo y Actualizado
+# ============================================
+
+# === Archivos y carpetas de Android Studio / IntelliJ ===
+.idea/
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/gradle.xml
+.idea/**/libraries
+.idea/**/caches
+.idea/**/shelf
+.idea/**/modules.xml
+.idea/**/assetWizardSettings.xml
+.idea/**/navEditor.xml
+.idea/**/render.experimental.xml
+.idea/**/misc.xml
+.idea/**/deploymentTargetDropDown.xml
+
+# Evitar configuración personal
+.idea/**/gradle.xml
+.idea/**/runConfigurations/
+.idea/**/usage.statistics.xml
+.idea/**/vcs.xml
+.idea/**/other.xml
+.idea/.name
+
+# === Archivos de compilación ===
+.gradle/
+build/
+*/build/
+!gradle-wrapper.jar
+!gradle-wrapper.properties
+
+# === Archivos del sistema operativo ===
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+desktop.ini
+
+# === Archivos de logs ===
+*.log
+*.log.*
+
+# === Archivos de cache ===
+.cxx/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+.gradle/
+.gradle-test-kit/
+.cache/
+.caches/
+**/intermediates/
+**/generated/
+**/out/
+**/tmp/
+**/release/
+**/debug/
+lint/intermediates/
+lint/generated/
+lint/tmp/
+
+# === Archivos de firma y llaves ===
+*.jks
+*.keystore
+*.keystore.properties
+signing.properties
+key.properties
+
+# === Archivos de Android específicos ===
+outputs/
+*.apk
+*.ap_
+*.aab
+*.aar
+*.dex
+*.class
+*.iml
+*.hprof
+
+# === Archivos de NDK / CMake ===
+obj/
+.cxx/
+.externalNativeBuild/
+cmake-build-*/
+
+# === Archivos de configuración de usuario ===
+*.orig
+*.rej
+*.bak
+*.swp
+*~
+*.tmp
+*.temp
+
+# === Archivos de ProGuard / R8 ===
+proguard/
+*.mapping.txt
+*.seed
+*.usage.txt
+*.dump.txt
+
+# === Archivos de Testing / Reports ===
+test-output/
+reports/
+jacoco.exec
+coverage/
+*.ec
+*.coverage
+*.hprof
+*.testresult
+*.test_results.xml
+
+# === Archivos de Firebase / Google ===
+google-services.json
+firebase-debug.log
+crashlytics-build.properties
+app/google-services.json
+app/src/**/google-services.json
+
+# === Archivos de configuración del entorno ===
+.env
+.env.*
+*.env.local
+*.env.development
+*.env.production
+*.env.staging
+*.env.test
+
+# === Archivos de CI/CD ===
+/fastlane/report.xml
+/fastlane/Preview.html
+/fastlane/screenshots
+/fastlane/test_output
+*.lock
+
+# === Archivos temporales del IDE ===
+*.iws
+.idea_modules/
+*.ipr
+*.class
+*.tmp
+*.sublime-workspace
+*.sublime-project
+
+# === Archivos de Android NDK / JNI ===
+*.so
+*.o
+*.obj
+*.a
+*.out
+
+# === Archivos de documentación generada ===
+docs/
+*.docset
+*.dSYM/
+*.zip
+*.tar.gz
+
+# === Archivos de herramientas externas ===
+.vscode/
+.npm/
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# === Archivos relacionados con lint ===
+lint-results.html
+lint-results.xml
+lint-results.txt
+lint-report.html
+lint-report.xml
+
+# === Archivos de configuración locales ===
+*.local
+*.user
+*.bak
+*.backup
+*.swp
+
+# === Android Studio Profiling ===
+*.hprof
+*.alloc
+*.trace
+*.hprof.txt
+*.heapdump
+
+# === Archivos de Benchmark y Performance ===
+benchmarkData/
+perf/
+profiling/
+trace/
+benchmarkResults/
+
+# === Archivos de cobertura ===
+*.lcov
+*.gcda
+*.gcno
+*.gcov
+coverage.ec
+
+# === Archivos del emulador Android ===
+*.avd
+*.ini
+.avd/
+*.avd/*.lock
+*.avd/*.avd
+
+# === Archivos de Jetpack Compose Preview ===
+compose-preview-cache/
+
+# === Archivos de Kotlin/Gradle incremental ===
+.kotlinc/
+.kotlin/
+buildSrc/.gradle/
+buildSrc/build/
+
+# === Archivos de JetBrains Fleet ===
+.fleet/
+
+# === Archivos de detekt y lint ===
+detekt-report.xml
+detekt-report.txt
+lint-baseline.xml
+
+# === Archivos de configuración del sistema ===
+.idea/httpRequests/
+httpRequests/
+*.http
+*.rest
+
+# === Archivos del simulador / adb ===
+*.adb
+*.trace
+*.data
+
+# === Archivos de backup de Android Studio ===
+backup/
+*.bak
+*.tmp
+
+# === Archivos de documentación y versiones ===
+*.pdf
+*.docx
+*.xlsx
+*.pptx
+CHANGELOG.old
+CHANGELOG.backup
