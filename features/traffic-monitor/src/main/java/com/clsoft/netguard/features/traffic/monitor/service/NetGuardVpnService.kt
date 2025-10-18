@@ -3,26 +3,53 @@ package com.clsoft.netguard.features.traffic.monitor.service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import androidx.core.content.ContextCompat
 import com.clsoft.netguard.core.utils.Logger
+import com.clsoft.netguard.engine.network.analyzer.NativeBridge
+import com.clsoft.netguard.features.traffic.monitor.domain.model.TrafficSession
+import com.clsoft.netguard.features.traffic.monitor.domain.model.toTraffic
+import com.clsoft.netguard.features.traffic.monitor.domain.repository.TrafficRepository
 import com.clsoft.netguard.framework.notification.ChannelConfig
 import com.clsoft.netguard.framework.notification.NotificationHelper
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
+import org.json.JSONObject
+import java.io.FileInputStream
+import java.io.IOException
+import java.net.InetAddress
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
+import kotlin.coroutines.coroutineContext
 
 @AndroidEntryPoint
 class NetGuardVpnService : VpnService() {
 
     @Inject lateinit var notificationHelper: NotificationHelper
+    @Inject lateinit var trafficRepository: TrafficRepository
 
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val vpnScopeRef = AtomicReference(createScope())
     private var vpnInterface: ParcelFileDescriptor? = null
     private var monitorJob: Job? = null
     @Volatile private var isRunning = false
+
+    private val localVpnAddress: String by lazy {
+        InetAddress.getByName(VPN_ADDRESS).hostAddress
+    }
+
+    private val connectivityManager: ConnectivityManager? by lazy {
+        getSystemService(ConnectivityManager::class.java)
+    }
+
+    private val connectionOwnerResolver: ConnectionOwnerResolver? by lazy {
+        connectivityManager?.let { manager ->
+            ConnectionOwnerResolver(manager, ::lookupPackageName)
+        }
+    }
+
 
     override fun onCreate() {
         super.onCreate()
@@ -55,46 +82,68 @@ class NetGuardVpnService : VpnService() {
                     return START_NOT_STICKY
                 }
 
-                Logger.d("NetGuardVpnService", "Iniciando simulación de tráfico")
+                Logger.d("NetGuardVpnService", "Iniciando captura de tráfico real desde el túnel")
                 isRunning = true
                 vpnInterface = establishVPN()
 
-                monitorJob = serviceScope.launch {
-                    try {
-                        Logger.d("NetGuardVpnService", "Simulación de tráfico iniciada")
-                        while (isActive && isRunning) {
-                            delay(2000)
-                            if (!isActive || !isRunning) break
-
-                            val session = TrafficSessionManager.mockSession()
-                            try {
-                                TrafficSessionManager.onNewSessionDetected(
-                                    this@NetGuardVpnService, session
-                                )
-                            } catch (ce: CancellationException) {
-                                Logger.d("NetGuardVpnService", "Emisión cancelada")
-                                break
-                            } catch (e: Exception) {
-                                Logger.e("NetGuardVpnService", "Error emitiendo sesión", e)
-                            }
-                        }
-                    } catch (ce: CancellationException) {
-                        Logger.d("NetGuardVpnService", "Monitor cancelado")
-                    } finally {
-                        Logger.d("NetGuardVpnService", "Monitor terminado")
-                    }
+                val scope = ensureScope()
+                monitorJob = scope.launch {
+                    captureVpnTraffic()
+//                    captureTrafficLoop()
                 }
             }
         }
         return START_NOT_STICKY
     }
 
+    private suspend fun captureTrafficLoop() {
+        val fd = vpnInterface?.fileDescriptor ?: return
+        val input = FileInputStream(fd)
+        val buffer = ByteArray(4096)
+        val batch = ArrayList<ByteArray>(64)
+
+        Logger.d("NetGuardVpnService", "Captura iniciada")
+
+        while (coroutineContext.isActive && isRunning) {
+            val bytesRead = input.read(buffer)
+            if (bytesRead <= 0) continue
+
+            batch.add(buffer.copyOf(bytesRead))
+            if (batch.size >= 32) {
+                processBatch(batch)
+                batch.clear()
+            }
+        }
+    }
+
+    private suspend fun processBatch(batch: List<ByteArray>) {
+        try {
+            val results = NativeBridge.analyzePackets(batch.toTypedArray())
+            for (json in results) {
+                persistResult(json)
+            }
+        } catch (e: Exception) {
+            Logger.e("NetGuardVpnService", "Error procesando batch", e)
+        }
+    }
+
+    private suspend fun persistResult(json: String) {
+        try {
+            val obj = JSONObject(json)
+            if (obj.has("error")) return
+
+            val session = TrafficSessionManager.buildFromJson(obj)
+            TrafficSessionManager.onNewSessionDetected(this, session)
+
+        } catch (e: Exception) {
+            Logger.e("NetGuardVpnService", "Error persistiendo resultado", e)
+        }
+    }
+
     private fun stopVpnService() {
-        Logger.d("NetGuardVpnService", "Deteniendo servicio VPN internamente")
+        Logger.d("NetGuardVpnService", "Deteniendo servicio VPN")
 
         isRunning = false
-
-        // Cierra el túnel ANTES de cancelar coroutines
         try {
             vpnInterface?.close()
             vpnInterface = null
@@ -105,12 +154,12 @@ class NetGuardVpnService : VpnService() {
 
         runBlocking {
             monitorJob?.cancelAndJoin()
-            serviceScope.cancel()
+            vpnScopeRef.getAndSet(createScope()).cancel()
+            monitorJob = null
         }
 
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
-        Logger.d("NetGuardVpnService", "Servicio detenido completamente")
     }
 
     override fun onDestroy() {
@@ -122,7 +171,7 @@ class NetGuardVpnService : VpnService() {
         Logger.d("NetGuardVpnService", "Configurando túnel VPN...")
         val builder = Builder()
             .setSession("NDK NetGuard VPN")
-            .addAddress("10.0.0.2", 32)
+            .addAddress(VPN_ADDRESS, 32)
             .addRoute("0.0.0.0", 0)
 
         return builder.establish().also {
@@ -133,8 +182,111 @@ class NetGuardVpnService : VpnService() {
         }
     }
 
+    private suspend fun captureVpnTraffic() {
+        val interfaceFd = vpnInterface ?: run {
+            Logger.e("NetGuardVpnService", "Interfaz VPN no disponible para captura")
+            isRunning = false
+            return
+        }
+
+        val aggregator = TrafficSessionAggregator()
+        val buffer = ByteArray(MAX_PACKET_SIZE)
+
+        try {
+            FileInputStream(interfaceFd.fileDescriptor).use { input ->
+                Logger.d("NetGuardVpnService", "Captura iniciada: esperando paquetes del túnel")
+                while (coroutineContext.isActive && isRunning) {
+                    val length = try {
+                        input.read(buffer)
+                    } catch (ioe: IOException) {
+                        if (coroutineContext.isActive && isRunning) {
+                            Logger.e("NetGuardVpnService", "Error leyendo paquete", ioe)
+                        }
+                        break
+                    }
+
+                    if (length <= 0) {
+                        continue
+                    }
+
+                    val rawPacket = buffer.copyOf(length)
+                    val parsed = VpnPacketParser.parsePacket(rawPacket, rawPacket.size, localVpnAddress)
+                    if (parsed == null) {
+                        continue
+                    }
+
+                    val packageName = connectionOwnerResolver?.resolve(parsed)
+
+                    try {
+                        aggregator.register(parsed, rawPacket, packageName) { session ->
+                            emitSession(session)
+                        }
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (e: Exception) {
+                        Logger.e("NetGuardVpnService", "Error emitiendo sesión agregada", e)
+                    }
+                }
+            }
+        } catch (ce: CancellationException) {
+            Logger.d("NetGuardVpnService", "Captura cancelada")
+            throw ce
+        } finally {
+            aggregator.flushAll { session ->
+                try {
+                    emitSession(session)
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Exception) {
+                    Logger.e("NetGuardVpnService", "Error finalizando emisión de sesión", e)
+                }
+            }
+            Logger.d("NetGuardVpnService", "Captura finalizada")
+        }
+    }
+    private suspend fun emitSession(session: TrafficSession) {
+        try {
+            trafficRepository.insertTraffic(session.toTraffic())
+        } catch (e: Exception) {
+            Logger.e("NetGuardVpnService", "No se pudo persistir el tráfico", e)
+        }
+
+        try {
+            TrafficSessionManager.onNewSessionDetected(this@NetGuardVpnService, session)
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            Logger.e("NetGuardVpnService", "Error notificando nueva sesión", e)
+        }
+    }
+
+    private fun lookupPackageName(uid: Int): String? {
+        val directName = runCatching { packageManager.getNameForUid(uid) }.getOrNull()
+        if (!directName.isNullOrBlank()) {
+            return directName
+        }
+
+        val candidates = runCatching { packageManager.getPackagesForUid(uid) }.getOrNull()
+        return candidates?.firstOrNull()
+    }
+
+    private fun createScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private fun ensureScope(): CoroutineScope {
+        val current = vpnScopeRef.get()
+        return if (current.isActive) {
+            current
+        } else {
+            val newScope = createScope()
+            vpnScopeRef.set(newScope)
+            newScope
+        }
+    }
+
     companion object {
         private const val ACTION_STOP = "com.ndk.netguard.STOP"
+        private const val VPN_ADDRESS = "10.0.0.2"
+        private const val MAX_PACKET_SIZE = 32_768
 
         fun start(ctx: Context) {
             Logger.d("NetGuardVpnService", "Iniciando servicio VPN")
