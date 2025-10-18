@@ -17,25 +17,27 @@ Java_com_clsoft_netguard_engine_network_analyzer_NativeBridge_getNativeVersion(J
 
 JNIEXPORT jobjectArray JNICALL
 Java_com_clsoft_netguard_engine_network_analyzer_NativeBridge_analyzePackets(
-        JNIEnv* env,
-        jobject /* this */,
-        jobjectArray packetData
-) {
-    // Simula análisis nativo
-    jsize length = env->GetArrayLength(packetData);
+        JNIEnv* env, jclass, jobjectArray packetArray) {
+
+    jsize count = env->GetArrayLength(packetArray);
     jclass stringClass = env->FindClass("java/lang/String");
-    jobjectArray result = env->NewObjectArray(length, stringClass, nullptr);
+    jobjectArray out = env->NewObjectArray(count, stringClass, nullptr);
 
-    for (jsize i = 0; i < length; i++) {
-        jstring item = (jstring) env->GetObjectArrayElement(packetData, i);
-        const char* raw = env->GetStringUTFChars(item, nullptr);
-        std::string analyzed = PacketAnalyzer::analyzePacket(raw);
-        env->SetObjectArrayElement(result, i, env->NewStringUTF(analyzed.c_str()));
-        env->ReleaseStringUTFChars(item, raw);
+    for (jsize i = 0; i < count; ++i) {
+        jbyteArray pkt = (jbyteArray) env->GetObjectArrayElement(packetArray, i);
+        if (!pkt) { env->SetObjectArrayElement(out, i, env->NewStringUTF("{\"error\":\"null\"}")); continue; }
+
+        jsize len = env->GetArrayLength(pkt);
+        std::string raw;
+        raw.resize(static_cast<size_t>(len));
+        env->GetByteArrayRegion(pkt, 0, len, reinterpret_cast<jbyte*>(&raw[0]));
+
+        std::string json = PacketAnalyzer::analyzePacket(raw);
+        env->SetObjectArrayElement(out, i, env->NewStringUTF(json.c_str()));
+
+        env->DeleteLocalRef(pkt);
     }
-
-    LOGI("Packet analysis simulated for %d packets", length);
-    return result;
+    return out;
 }
 
 }
