@@ -5,6 +5,7 @@
 #include <array>
 #include <arpa/inet.h>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -126,6 +127,40 @@ namespace {
         uint16_t rcode = 0;
     };
 
+    struct TlsIndicators {
+        bool parsed = false;
+        bool clientHello = false;
+        bool malformed = false;
+        uint16_t version = 0;
+        size_t cipherCount = 0;
+        std::string serverName;
+    };
+
+    struct RunningStats {
+        size_t n = 0;
+        double mean = 0.0;
+        double m2 = 0.0;
+
+        void add(double sample) {
+            n++;
+            double delta = sample - mean;
+            mean += delta / static_cast<double>(n);
+            double delta2 = sample - mean;
+            m2 += delta * delta2;
+        }
+
+        double variance() const {
+            if (n < 2) {
+                return 0.0;
+            }
+            return m2 / static_cast<double>(n - 1);
+        }
+
+        double stddev() const {
+            return std::sqrt(variance());
+        }
+    };
+
     struct PacketContext {
         bool valid = false;
         bool truncated = false;
@@ -144,6 +179,7 @@ namespace {
         int dstPort = 0;
         uint8_t hopLimit = 0;
         DnsMinimal dns;
+        TlsIndicators tls;
     };
 
     struct RiskAssessment {
@@ -161,6 +197,14 @@ namespace {
         std::chrono::steady_clock::time_point lastSeen{};
         size_t count = 0;
         size_t smallPayloadCount = 0;
+        size_t totalBytes = 0;
+        size_t inboundPackets = 0;
+        size_t outboundPackets = 0;
+        size_t burstPackets = 0;
+        size_t burstSmallPayloads = 0;
+        RunningStats payloadStats;
+        RunningStats interArrivalMs;
+        std::chrono::steady_clock::time_point previousSeen{};
     };
 
     std::mutex gSessionMutex;
@@ -200,6 +244,13 @@ namespace {
     bool isPrintableDomainChar(char c) {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_';
+    }
+
+    double safeRatio(size_t numerator, size_t denominator) {
+        if (denominator == 0) {
+            return 0.0;
+        }
+        return static_cast<double>(numerator) / static_cast<double>(denominator);
     }
 
     DnsMinimal parseDns(const uint8_t* data, size_t len) {
@@ -252,6 +303,149 @@ namespace {
         return result;
     }
 
+    TlsIndicators inspectTlsPayload(const uint8_t* data, size_t len) {
+        TlsIndicators info;
+        if (len < 6) {
+            return info;
+        }
+
+        if (data[0] != 0x16) {
+            return info;
+        }
+
+        size_t offset = 5; // start of handshake
+        uint8_t hsType = data[offset];
+        if (hsType != 0x01) { // only process ClientHello
+            info.parsed = true;
+            return info;
+        }
+
+        if (len < offset + 4) {
+            info.malformed = true;
+            info.parsed = true;
+            return info;
+        }
+
+        uint32_t hsLen = (static_cast<uint32_t>(data[offset + 1]) << 16) |
+                         (static_cast<uint32_t>(data[offset + 2]) << 8) |
+                         static_cast<uint32_t>(data[offset + 3]);
+        offset += 4;
+        if (len < offset + 2 + 32) {
+            info.malformed = true;
+            info.parsed = true;
+            return info;
+        }
+
+        info.version = static_cast<uint16_t>(data[offset]) << 8 | static_cast<uint16_t>(data[offset + 1]);
+        offset += 2;
+        offset += 32; // random
+
+        if (len < offset + 1) {
+            info.malformed = true;
+            info.parsed = true;
+            return info;
+        }
+        uint8_t sessionIdLen = data[offset++];
+        if (len < offset + sessionIdLen) {
+            info.malformed = true;
+            info.parsed = true;
+            return info;
+        }
+        offset += sessionIdLen;
+
+        if (len < offset + 2) {
+            info.malformed = true;
+            info.parsed = true;
+            return info;
+        }
+        uint16_t cipherLen = static_cast<uint16_t>(data[offset]) << 8 | static_cast<uint16_t>(data[offset + 1]);
+        offset += 2;
+        if (cipherLen % 2 != 0 || len < offset + cipherLen) {
+            info.malformed = true;
+            info.parsed = true;
+            return info;
+        }
+        info.cipherCount = cipherLen / 2u;
+        offset += cipherLen;
+
+        if (len < offset + 1) {
+            info.malformed = true;
+            info.parsed = true;
+            return info;
+        }
+        uint8_t compressionLen = data[offset++];
+        if (len < offset + compressionLen) {
+            info.malformed = true;
+            info.parsed = true;
+            return info;
+        }
+        offset += compressionLen;
+
+        if (len < offset + 2) {
+            info.parsed = true;
+            info.clientHello = true;
+            return info;
+        }
+
+        uint16_t extensionsLen = static_cast<uint16_t>(data[offset]) << 8 | static_cast<uint16_t>(data[offset + 1]);
+        offset += 2;
+        size_t extensionsEnd = offset + extensionsLen;
+        if (extensionsEnd > len) {
+            info.malformed = true;
+            info.parsed = true;
+            return info;
+        }
+
+        while (offset + 4 <= extensionsEnd) {
+            uint16_t extType = static_cast<uint16_t>(data[offset]) << 8 | static_cast<uint16_t>(data[offset + 1]);
+            uint16_t extSize = static_cast<uint16_t>(data[offset + 2]) << 8 | static_cast<uint16_t>(data[offset + 3]);
+            offset += 4;
+            if (offset + extSize > extensionsEnd) {
+                info.malformed = true;
+                info.parsed = true;
+                return info;
+            }
+
+            if (extType == 0x0000 && extSize >= 5) { // SNI
+                uint16_t listLen = static_cast<uint16_t>(data[offset]) << 8 | static_cast<uint16_t>(data[offset + 1]);
+                size_t cursor = offset + 2;
+                size_t listEnd = offset + 2 + listLen;
+                if (listEnd > offset + extSize) {
+                    info.malformed = true;
+                    info.parsed = true;
+                    return info;
+                }
+                while (cursor + 3 <= listEnd) {
+                    uint8_t nameType = data[cursor++];
+                    uint16_t nameLen = static_cast<uint16_t>(data[cursor]) << 8 | static_cast<uint16_t>(data[cursor + 1]);
+                    cursor += 2;
+                    if (cursor + nameLen > listEnd) {
+                        info.malformed = true;
+                        info.parsed = true;
+                        return info;
+                    }
+                    if (nameType == 0x00) {
+                        info.serverName.assign(reinterpret_cast<const char*>(data + cursor), nameLen);
+                        break;
+                    }
+                    cursor += nameLen;
+                }
+            }
+
+            offset += extSize;
+        }
+
+        info.parsed = true;
+        info.clientHello = true;
+        if (extensionsEnd != offset) {
+            info.malformed = true;
+        }
+        if (hsLen + 4 > len - 5) {
+            info.malformed = true;
+        }
+        return info;
+    }
+
     bool isPrivateIPv4(uint32_t address) {
         uint32_t host = ntohl(address);
         if ((host & 0xFF000000u) == 0x0A000000u) return true;
@@ -298,21 +492,51 @@ namespace {
         }
     }
 
-    SessionInfo registerSession(const std::string& key, size_t payloadLength) {
+    SessionInfo registerSession(const std::string& key,
+                                size_t payloadLength,
+                                size_t packetLength,
+                                const std::string& direction) {
         auto now = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(gSessionMutex);
         cleanupSessionsLocked(now);
 
         SessionInfo& info = gSessions[key];
-        if (now - info.lastSeen < std::chrono::milliseconds(500)) {
-            info.count++;
-            if (payloadLength <= 150) {
-                info.smallPayloadCount++;
-            }
-        } else {
-            info.count = 1;
-            info.smallPayloadCount = payloadLength <= 150 ? 1 : 0;
+        bool seenBefore = info.count > 0;
+        bool sameBurst = seenBefore && (now - info.lastSeen < std::chrono::milliseconds(500));
+
+        if (!seenBefore) {
+            info.count = 0;
+            info.smallPayloadCount = 0;
+            info.burstPackets = 0;
+            info.burstSmallPayloads = 0;
         }
+
+        if (!sameBurst) {
+            info.burstPackets = 0;
+            info.burstSmallPayloads = 0;
+        }
+
+        info.count++;
+        info.burstPackets++;
+
+        if (payloadLength <= 150) {
+            info.smallPayloadCount++;
+            info.burstSmallPayloads++;
+        }
+
+        info.totalBytes += packetLength;
+        if (direction == "inbound") {
+            info.inboundPackets++;
+        } else if (direction == "outbound") {
+            info.outboundPackets++;
+        }
+
+        info.payloadStats.add(static_cast<double>(payloadLength));
+        if (info.previousSeen.time_since_epoch().count() != 0) {
+            auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(now - info.previousSeen);
+            info.interArrivalMs.add(static_cast<double>(delta.count()));
+        }
+        info.previousSeen = now;
         info.lastSeen = now;
         return info;
     }
@@ -377,6 +601,13 @@ namespace {
     }
 
     void applyBehaviorHeuristics(const PacketContext& ctx, const SessionInfo& session, RiskAssessment& risk) {
+        double meanPayload = session.payloadStats.mean;
+        double payloadStddev = session.payloadStats.stddev();
+        double interArrivalMean = session.interArrivalMs.mean;
+        double interArrivalStddev = session.interArrivalMs.stddev();
+        double smallPayloadRatio = safeRatio(session.smallPayloadCount, session.count);
+        double burstSmallRatio = safeRatio(session.burstSmallPayloads, session.burstPackets);
+
         if (ctx.protocol == "TCP") {
             if (ctx.payloadLength == 0 && session.count > 6) {
                 risk.correlationScore = std::max(risk.correlationScore, 0.65);
@@ -385,6 +616,11 @@ namespace {
             if (ctx.payloadLength > 1400) {
                 risk.secondaryScore = std::max(risk.secondaryScore, 0.6);
                 if (risk.secondaryReason.empty()) risk.secondaryReason = "Oversized TCP payload";
+            }
+            if (ctx.tls.malformed) {
+                risk.highRiskConfirmed = true;
+                risk.primaryScore = std::max(risk.primaryScore, 0.95);
+                risk.primaryReason = "Malformed TLS handshake";
             }
         }
 
@@ -399,15 +635,106 @@ namespace {
             risk.secondaryReason = "High-entropy payload";
         }
 
+        if (session.count > 12 && smallPayloadRatio > 0.7 && meanPayload < 180.0 && payloadStddev < 60.0) {
+            risk.correlationScore = std::max(risk.correlationScore, 0.82);
+            risk.correlationReason = "Beacon-like session pattern";
+        }
+
+        if (session.burstPackets > 6 && burstSmallRatio > 0.85 && interArrivalStddev < 15.0) {
+            risk.correlationScore = std::max(risk.correlationScore, 0.84);
+            risk.correlationReason = "Short-burst command channel";
+        }
+
+        if (session.totalBytes > 2 * 1024 * 1024 && smallPayloadRatio > 0.55) {
+            risk.primaryScore = std::max(risk.primaryScore, 0.78);
+            if (risk.primaryReason.empty()) {
+                risk.primaryReason = "Sustained transfer with small frames";
+            }
+        }
+
+        if (session.interArrivalMs.n > 5 && interArrivalMean < 80.0 && interArrivalStddev < 12.0) {
+            risk.correlationScore = std::max(risk.correlationScore, 0.88);
+            risk.correlationReason = "Highly periodic session";
+        }
+
         if (ctx.hopLimit != 0 && ctx.hopLimit < 32 && ctx.direction == "inbound") {
             risk.secondaryScore = std::max(risk.secondaryScore, 0.62);
             risk.secondaryReason = "Low TTL inbound packet";
+        }
+
+        if (ctx.direction == "inbound" && session.outboundPackets == 0 && session.count > 8) {
+            risk.secondaryScore = std::max(risk.secondaryScore, 0.66);
+            if (risk.secondaryReason.empty()) {
+                risk.secondaryReason = "Inbound-only unsolicited flow";
+            }
+        }
+
+        if (ctx.direction == "outbound" && session.inboundPackets == 0 && session.count > 30) {
+            risk.primaryScore = std::max(risk.primaryScore, 0.8);
+            if (risk.primaryReason.empty()) {
+                risk.primaryReason = "Outbound-only persistence";
+            }
         }
 
         if (ctx.tampered || ctx.hookSuspected) {
             risk.highRiskConfirmed = true;
             risk.correlationScore = std::max(risk.correlationScore, 0.95);
             risk.correlationReason = "Integrity or hooking detection";
+        }
+
+        if (ctx.tls.clientHello && ctx.tls.serverName.empty() && ctx.direction == "outbound") {
+            risk.secondaryScore = std::max(risk.secondaryScore, 0.72);
+            risk.secondaryReason = "TLS client hello without SNI";
+        }
+    }
+
+    void applyTlsHeuristics(const PacketContext& ctx, RiskAssessment& risk) {
+        if (!ctx.tls.parsed) {
+            return;
+        }
+
+        if (ctx.tls.clientHello) {
+            if (ctx.tls.version != 0 && ctx.tls.version < 0x0303) {
+                risk.secondaryScore = std::max(risk.secondaryScore, 0.68);
+                if (risk.secondaryReason.empty()) {
+                    risk.secondaryReason = "Outdated TLS version";
+                }
+            }
+
+            if (ctx.tls.cipherCount == 0) {
+                risk.secondaryScore = std::max(risk.secondaryScore, 0.7);
+                if (risk.secondaryReason.empty()) {
+                    risk.secondaryReason = "TLS client without ciphers";
+                }
+            }
+
+            if (ctx.tls.cipherCount > 140) {
+                risk.primaryScore = std::max(risk.primaryScore, 0.83);
+                if (risk.primaryReason.empty()) {
+                    risk.primaryReason = "Suspicious TLS cipher enumeration";
+                }
+            }
+
+            if (!ctx.tls.serverName.empty()) {
+                size_t digitCount = 0;
+                for (unsigned char c : ctx.tls.serverName) {
+                    if (std::isdigit(c)) {
+                        digitCount++;
+                    }
+                }
+                if (ctx.tls.serverName.size() > 40 && digitCount > ctx.tls.serverName.size() / 2) {
+                    risk.secondaryScore = std::max(risk.secondaryScore, 0.76);
+                    if (risk.secondaryReason.empty()) {
+                        risk.secondaryReason = "Numeric-heavy TLS SNI";
+                    }
+                }
+            }
+        }
+
+        if (ctx.tls.malformed) {
+            risk.highRiskConfirmed = true;
+            risk.primaryScore = std::max(risk.primaryScore, ABSOLUTE_HIGH_SCORE);
+            risk.primaryReason = "Critical TLS parsing failure";
         }
     }
 
@@ -417,6 +744,40 @@ namespace {
             score = std::max(score, ABSOLUTE_HIGH_SCORE);
         }
         return std::min(std::max(score, 0.0), 1.0);
+    }
+
+    double calibrateScore(double rawScore, const RiskAssessment& risk, const SessionInfo& session) {
+        double adjusted = rawScore;
+        if (risk.highRiskConfirmed) {
+            adjusted = std::max(adjusted, 0.93);
+        }
+
+        double sessionBoost = std::min(0.12, safeRatio(session.count, static_cast<size_t>(120)) * 0.6);
+        adjusted = std::min(1.0, adjusted + sessionBoost);
+
+        if (session.interArrivalMs.n > 5 && session.interArrivalMs.stddev() < 8.0) {
+            adjusted = std::min(1.0, adjusted + 0.08);
+        }
+
+        if (session.totalBytes > 4 * 1024 * 1024) {
+            adjusted = std::min(1.0, adjusted + 0.05);
+        }
+
+        return std::clamp(adjusted, 0.0, 1.0);
+    }
+
+    double computeConfidence(double calibratedScore, const RiskAssessment& risk, const SessionInfo& session) {
+        double confidence = 0.35 + 0.4 * calibratedScore;
+        if (risk.highRiskConfirmed) {
+            confidence += 0.18;
+        }
+        if (session.count > 10) {
+            confidence += 0.05;
+        }
+        if (session.interArrivalMs.n > 3) {
+            confidence += 0.04;
+        }
+        return std::clamp(confidence, 0.0, 1.0);
     }
 
     std::string determineLabel(double score, const RiskAssessment& risk) {
@@ -485,6 +846,13 @@ namespace {
                     return ctx;
                 }
                 ctx.payloadLength = remain - tcpHeaderLen;
+                const uint8_t* payload = l4 + tcpHeaderLen;
+                bool likelyTls = (ctx.srcPort == 443 || ctx.dstPort == 443 ||
+                                   ctx.srcPort == 8443 || ctx.dstPort == 8443 ||
+                                   ctx.dstPort == 9443);
+                if (likelyTls && ctx.payloadLength >= 6) {
+                    ctx.tls = inspectTlsPayload(payload, ctx.payloadLength);
+                }
             } else if (ip->protocol == IPPROTO_UDP && remain >= sizeof(udphdr)) {
                 ctx.protocol = "UDP";
                 const udphdr* udp = reinterpret_cast<const udphdr*>(l4);
@@ -525,6 +893,13 @@ namespace {
                     return ctx;
                 }
                 ctx.payloadLength = remain - tcpHeaderLen;
+                const uint8_t* payload = l4 + tcpHeaderLen;
+                bool likelyTls = (ctx.srcPort == 443 || ctx.dstPort == 443 ||
+                                   ctx.srcPort == 8443 || ctx.dstPort == 8443 ||
+                                   ctx.dstPort == 9443);
+                if (likelyTls && ctx.payloadLength >= 6) {
+                    ctx.tls = inspectTlsPayload(payload, ctx.payloadLength);
+                }
             } else if (next == IPPROTO_UDP && remain >= sizeof(udphdr)) {
                 ctx.protocol = "UDP";
                 const udphdr* udp = reinterpret_cast<const udphdr*>(l4);
@@ -571,6 +946,12 @@ PacketAnalysisResult PacketAnalyzer::analyzePacket(const std::vector<uint8_t>& r
     json.kv("payloadBytes", static_cast<int64_t>(ctx.payloadLength));
     json.kv("entropy", ctx.entropy);
     json.kv("hopLimit", static_cast<int64_t>(ctx.hopLimit));
+    json.kv("tlsParsed", ctx.tls.parsed);
+    json.kv("tlsClientHello", ctx.tls.clientHello);
+    json.kv("tlsMalformed", ctx.tls.malformed);
+    json.kv("tlsCipherCount", static_cast<int64_t>(ctx.tls.cipherCount));
+    json.kv("tlsVersion", static_cast<int64_t>(ctx.tls.version));
+    if (!ctx.tls.serverName.empty()) json.kv("tlsServerName", ctx.tls.serverName);
 
     if (ctx.dnsParsed) {
         JsonBuilder dnsJson;
@@ -597,11 +978,12 @@ PacketAnalysisResult PacketAnalyzer::analyzePacket(const std::vector<uint8_t>& r
     const std::string sessionKey = (!ctx.srcIp.empty() || !ctx.dstIp.empty())
                                    ? (ctx.srcIp + "->" + ctx.dstIp + ':' + std::to_string(ctx.dstPort))
                                    : std::string("unknown:") + std::to_string(ctx.dstPort);
-    SessionInfo sessionInfo = registerSession(sessionKey, ctx.payloadLength);
+    SessionInfo sessionInfo = registerSession(sessionKey, ctx.payloadLength, ctx.length, ctx.direction);
 
     applyPortHeuristics(ctx, risk);
     applyDnsHeuristics(ctx, risk);
     applyBehaviorHeuristics(ctx, sessionInfo, risk);
+    applyTlsHeuristics(ctx, risk);
 
     if (ctx.direction == "inbound" && ctx.payloadLength > 512 && ctx.entropy > 6.5) {
         risk.secondaryScore = std::max(risk.secondaryScore, 0.7);
@@ -613,7 +995,23 @@ PacketAnalysisResult PacketAnalyzer::analyzePacket(const std::vector<uint8_t>& r
         risk.secondaryReason = "Empty DNS query";
     }
 
-    double finalScore = consolidateScore(risk);
+    JsonBuilder sessionJson;
+    sessionJson.kv("count", static_cast<int64_t>(sessionInfo.count));
+    sessionJson.kv("bytes", static_cast<int64_t>(sessionInfo.totalBytes));
+    sessionJson.kv("smallPayloadRatio", safeRatio(sessionInfo.smallPayloadCount, sessionInfo.count));
+    sessionJson.kv("meanPayload", sessionInfo.payloadStats.mean);
+    sessionJson.kv("payloadStddev", sessionInfo.payloadStats.stddev());
+    sessionJson.kv("meanInterArrivalMs", sessionInfo.interArrivalMs.mean);
+    sessionJson.kv("interArrivalStddev", sessionInfo.interArrivalMs.stddev());
+    sessionJson.kv("burstPackets", static_cast<int64_t>(sessionInfo.burstPackets));
+    sessionJson.kv("burstSmallPayloads", static_cast<int64_t>(sessionInfo.burstSmallPayloads));
+    sessionJson.kv("burstSmallPayloadRatio", safeRatio(sessionInfo.burstSmallPayloads, sessionInfo.burstPackets));
+    sessionJson.kv("inboundPackets", static_cast<int64_t>(sessionInfo.inboundPackets));
+    sessionJson.kv("outboundPackets", static_cast<int64_t>(sessionInfo.outboundPackets));
+    json.raw("session", sessionJson.str());
+
+    double rawScore = consolidateScore(risk);
+    double finalScore = calibrateScore(rawScore, risk, sessionInfo);
     std::string label = determineLabel(finalScore, risk);
 
     if (label != "High" && risk.highRiskConfirmed) {
@@ -623,7 +1021,9 @@ PacketAnalysisResult PacketAnalyzer::analyzePacket(const std::vector<uint8_t>& r
     }
 
     json.kv("riskLabel", label);
+    json.kv("rawRiskScore", rawScore);
     json.kv("riskScore", finalScore);
+    json.kv("confidence", computeConfidence(finalScore, risk, sessionInfo));
 
     bool blocked = label == "High";
     json.kv("blocked", blocked);
