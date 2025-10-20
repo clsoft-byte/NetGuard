@@ -4,14 +4,37 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import com.clsoft.netguard.core.database.entities.TrafficEntity
 import com.clsoft.netguard.core.database.entities.TrafficSummary
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface TrafficDao {
+    @Query("""
+        SELECT * FROM traffic 
+        WHERE sourceIp = :srcIp 
+        AND destinationIp = :dstIp 
+        AND protocol = :protocol 
+        AND destinationPort = :dstPort
+        LIMIT 1
+    """)
+    suspend fun findActiveSession(
+        srcIp: String,
+        dstIp: String,
+        protocol: String,
+        dstPort: Int
+    ): TrafficEntity?
+
+    @Query("SELECT * FROM traffic ORDER BY timestamp DESC")
+    fun observeTraffic(): Flow<List<TrafficEntity>>
+
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(session: TrafficEntity)
+    suspend fun insertTraffic(entity: TrafficEntity)
+
+    @Update
+    suspend fun updateTraffic(entity: TrafficEntity)
 
     @Query("SELECT SUM(bytesSent + bytesReceived) FROM traffic")
     fun getTotalTraffic(): Flow<Long>

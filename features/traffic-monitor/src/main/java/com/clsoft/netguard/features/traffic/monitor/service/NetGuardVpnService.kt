@@ -36,9 +36,9 @@ class NetGuardVpnService : VpnService() {
     private var monitorJob: Job? = null
     @Volatile private var isRunning = false
 
-    private val localVpnAddress: String by lazy {
-        InetAddress.getByName(VPN_ADDRESS).hostAddress
-    }
+    private val localVpnAddressV4: String by lazy { InetAddress.getByName(VPN_ADDRESS).hostAddress }
+    private val localVpnAddressV6: String = "fd00:1:fd00::2" // misma que añadiste en Builder
+
 
     private val connectivityManager: ConnectivityManager? by lazy {
         getSystemService(ConnectivityManager::class.java)
@@ -96,50 +96,6 @@ class NetGuardVpnService : VpnService() {
         return START_NOT_STICKY
     }
 
-    private suspend fun captureTrafficLoop() {
-        val fd = vpnInterface?.fileDescriptor ?: return
-        val input = FileInputStream(fd)
-        val buffer = ByteArray(4096)
-        val batch = ArrayList<ByteArray>(64)
-
-        Logger.d("NetGuardVpnService", "Captura iniciada")
-
-        while (coroutineContext.isActive && isRunning) {
-            val bytesRead = input.read(buffer)
-            if (bytesRead <= 0) continue
-
-            batch.add(buffer.copyOf(bytesRead))
-            if (batch.size >= 32) {
-                processBatch(batch)
-                batch.clear()
-            }
-        }
-    }
-
-    private suspend fun processBatch(batch: List<ByteArray>) {
-        try {
-            val results = NativeBridge.analyzePackets(batch.toTypedArray())
-            for (json in results) {
-                persistResult(json)
-            }
-        } catch (e: Exception) {
-            Logger.e("NetGuardVpnService", "Error procesando batch", e)
-        }
-    }
-
-    private suspend fun persistResult(json: String) {
-        try {
-            val obj = JSONObject(json)
-            if (obj.has("error")) return
-
-            val session = TrafficSessionManager.buildFromJson(obj)
-            TrafficSessionManager.onNewSessionDetected(this, session)
-
-        } catch (e: Exception) {
-            Logger.e("NetGuardVpnService", "Error persistiendo resultado", e)
-        }
-    }
-
     private fun stopVpnService() {
         Logger.d("NetGuardVpnService", "Deteniendo servicio VPN")
 
@@ -173,6 +129,8 @@ class NetGuardVpnService : VpnService() {
             .setSession("NDK NetGuard VPN")
             .addAddress(VPN_ADDRESS, 32)
             .addRoute("0.0.0.0", 0)
+            .addAddress("fd00:1:fd00::2", 128)
+            .addRoute("::", 0)
 
         return builder.establish().also {
             if (it != null)
@@ -210,7 +168,7 @@ class NetGuardVpnService : VpnService() {
                     }
 
                     val rawPacket = buffer.copyOf(length)
-                    val parsed = VpnPacketParser.parsePacket(rawPacket, rawPacket.size, localVpnAddress)
+                    val parsed = VpnPacketParser.parsePacket(rawPacket, rawPacket.size, localVpnAddressV4, localVpnAddressV6)
                     if (parsed == null) {
                         continue
                     }
@@ -246,7 +204,7 @@ class NetGuardVpnService : VpnService() {
     }
     private suspend fun emitSession(session: TrafficSession) {
         try {
-            trafficRepository.insertTraffic(session.toTraffic())
+            trafficRepository.saveOrUpdateTraffic(session.toTraffic())
         } catch (e: Exception) {
             Logger.e("NetGuardVpnService", "No se pudo persistir el tráfico", e)
         }

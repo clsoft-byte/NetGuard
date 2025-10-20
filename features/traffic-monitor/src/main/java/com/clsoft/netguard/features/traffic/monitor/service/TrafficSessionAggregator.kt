@@ -26,6 +26,8 @@ internal class TrafficSessionAggregator(
                 id = UUID.randomUUID().toString(),
                 sourceIp = packet.sourceIp,
                 destinationIp = packet.destinationIp,
+                sourcePort = packet.sourcePort,
+                destinationPort = packet.destinationPort,
                 protocol = packet.protocol,
                 firstSeen = now,
                 appPackage = resolvedPackage ?: UNKNOWN_APP
@@ -76,6 +78,8 @@ internal class TrafficSessionAggregator(
         val id: String,
         val sourceIp: String,
         val destinationIp: String,
+        val sourcePort: Int,
+        val destinationPort: Int,
         val protocol: String,
         val firstSeen: Long,
         var lastUpdated: Long = firstSeen,
@@ -89,24 +93,38 @@ internal class TrafficSessionAggregator(
             return totalBytes >= minBytes || (now - firstSeen) >= window
         }
 
-        fun toTrafficSession(risk: NativeRiskEvaluator.RiskSummary): TrafficSession = TrafficSession(
-            id = id,
-            appPackage = appPackage,
-            sourceIp = sourceIp,
-            destinationIp = destinationIp,
-            protocol = protocol,
-            bytesSent = bytesSent,
-            bytesReceived = bytesReceived,
-            timestamp = lastUpdated,
-            blocked = risk.blocked,
-            riskScore = risk.score,
-            riskLabel = risk.label
-        )
+        fun toTrafficSession(risk: NativeRiskEvaluator.RiskSummary): TrafficSession  {
+            val (label, score) = if (risk.label.isNullOrBlank() || risk.score <= 0f) {
+                when (destinationPort) {
+                    22, 23, 445, 3389 -> "High" to 0.90f
+                    80, 443           -> "Medium" to 0.50f
+                    else              -> "Low" to 0.20f
+                }
+            } else {
+                risk.label to risk.score
+            }
+
+            return TrafficSession(
+                id = id,
+                appPackage = appPackage,
+                sourceIp = sourceIp,
+                destinationIp = destinationIp,
+                destinationPort = destinationPort,
+                sourcePort = sourcePort,
+                protocol = protocol,
+                bytesSent = bytesSent,
+                bytesReceived = bytesReceived,
+                timestamp = lastUpdated,
+                blocked = risk.blocked,
+                riskScore = score,
+                riskLabel = label
+            )
+        }
     }
 
     companion object {
-        private const val DEFAULT_FLUSH_WINDOW = 1_500L
-        private const val DEFAULT_MIN_BYTES = 1_024L
+        private const val DEFAULT_FLUSH_WINDOW = 600L
+        private const val DEFAULT_MIN_BYTES = 64L
         private const val UNKNOWN_APP = "unknown"
     }
 }

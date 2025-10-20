@@ -8,9 +8,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.navigation.compose.rememberNavController
+import com.clsoft.netguard.framework.permissions.PermissionHandler
 import com.clsoft.netguard.navigation.NavGraph
 import com.clsoft.netguard.ui.components.BottomNavigationBar
 import com.clsoft.netguard.ui.theme.NetGuardTheme
@@ -22,7 +22,7 @@ class MainActivity : ComponentActivity() {
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
+        if (result.resultCode == RESULT_OK) {
             Log.d("MainActivity", "❌ Permiso VPN Activado por el usuario")
         } else {
             Log.e("MainActivity", "❌ Permiso VPN denegado por el usuario")
@@ -32,6 +32,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        PermissionHandler(this) { }.requestNotificationPermission()
         prepareVpnPermission()
         setContent {
             NetGuardTheme {

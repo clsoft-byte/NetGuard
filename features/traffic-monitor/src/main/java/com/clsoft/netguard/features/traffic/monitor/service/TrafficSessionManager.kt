@@ -55,49 +55,4 @@ object TrafficSessionManager {
             )
         }
     }
-
-    fun buildFromJson(obj: JSONObject): TrafficSession {
-        return TrafficSession(
-            id = UUID.randomUUID().toString(),
-            appPackage = "unknown",
-            sourceIp = obj.optString("src", ""),
-            destinationIp = obj.optString("dst", ""),
-            protocol = obj.optString("proto", ""),
-            bytesSent = obj.optLong("bytes", 0L),
-            bytesReceived = 0L,
-            timestamp = System.currentTimeMillis()
-        )
-    }
-
-    /**
-     * Genera tráfico simulado para pruebas y desarrollo sin NDK.
-     */
-    fun mockSession(): TrafficSession {
-        val destinations = listOf(
-            "8.8.8.8",          // Google DNS (sospechoso)
-            "1.1.1.1",          // Cloudflare
-            "172.217.10.14",    // Google
-            "104.244.42.129",   // Twitter
-            "142.250.190.78"    // YouTube
-        )
-
-        val apps = listOf(
-            "com.whatsapp",
-            "com.instagram.android",
-            "com.google.chrome",
-            "com.tiktok.android",
-            "com.spotify.music"
-        )
-
-        return TrafficSession(
-            id = UUID.randomUUID().toString(),
-            appPackage = apps.random(),
-            sourceIp = "192.168.1.${Random.nextInt(2, 200)}",
-            destinationIp = destinations.random(),
-            protocol = listOf("TCP", "UDP").random(),
-            bytesSent = Random.nextLong(10_000, 5_000_000),
-            bytesReceived = Random.nextLong(10_000, 10_000_000),
-            timestamp = System.currentTimeMillis()
-        )
-    }
 }

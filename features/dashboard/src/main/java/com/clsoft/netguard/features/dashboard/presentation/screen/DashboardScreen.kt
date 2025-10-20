@@ -1,5 +1,6 @@
 package com.clsoft.netguard.features.dashboard.presentation.screen
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -82,41 +83,43 @@ fun DashboardScreen(
                     verticalAlignment = Alignment.CenterVertically
                 )
                 {
+                    val totalSent = state.data.totalSent
+                    val totalReceived = state.data.totalReceived
+                    val total = totalSent + totalReceived
+                    NetworkOverview(totalSent.toMB(), totalReceived.toMB())
                     // Circular chart
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier.size(120.dp)
-                    ) {
-                        Canvas(modifier = Modifier.size(120.dp)) {
-                            drawArc(
-                                color = Color(0xFF007AFF),
-                                startAngle = -90f,
-                                sweepAngle = 220f,
-                                useCenter = false,
-                                style = Stroke(width = 14f, cap = StrokeCap.Round)
-                            )
-                            drawArc(
-                                color = Color(0xFF5AC8FA),
-                                startAngle = 130f,
-                                sweepAngle = 110f,
-                                useCenter = false,
-                                style = Stroke(width = 14f, cap = StrokeCap.Round)
-                            )
-                        }
-                        Text(
-                            text = "--- MB",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+//                    Box(
+//                        contentAlignment = Alignment.Center,
+//                        modifier = Modifier.size(120.dp)
+//                    ) {
+//                        Canvas(modifier = Modifier.size(120.dp)) {
+//                            drawArc(
+//                                color = Color(0xFF007AFF),
+//                                startAngle = -90f,
+//                                sweepAngle = 220f,
+//                                useCenter = false,
+//                                style = Stroke(width = 14f, cap = StrokeCap.Round)
+//                            )
+//                            drawArc(
+//                                color = Color(0xFF5AC8FA),
+//                                startAngle = 130f,
+//                                sweepAngle = 110f,
+//                                useCenter = false,
+//                                style = Stroke(width = 14f, cap = StrokeCap.Round)
+//                            )
+//                        }
+//                        Text(
+//                            text = "${formatMb(total)} MB",
+//                            color = Color.White,
+//                            fontWeight = FontWeight.Bold
+//                        )
+//                    }
 
                     Column(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.padding(20.dp)
                     ) {
-                        val totalSent = state.data?.totalSent ?: 0L
-                        val totalReceived = state.data?.totalReceived ?: 0L
-                        val total = totalSent + totalReceived
+
                         MetricRow("Total", "${formatMb(total)} MB")
                         MetricRow("Sent", "${formatMb(totalSent)} MB")
                         MetricRow("Received", "${formatMb(totalReceived)} MB")
@@ -199,7 +202,68 @@ private fun RiskRow(riskLevel: String, appName: String, riskType: String) {
     }
 }
 
+@Composable
+fun NetworkOverview(
+    sentMb: Float,
+    receivedMb: Float
+) {
+    val totalMb = sentMb + receivedMb
+    val sentPercent = if (totalMb > 0) sentMb / totalMb else 0f
+    val receivedPercent = if (totalMb > 0) receivedMb / totalMb else 0f
+    val sentSweep = sentPercent * 360f
+    val receivedSweep = receivedPercent * 360f
+    val animatedSentSweep by animateFloatAsState(targetValue = sentSweep, label = "sentSweep")
+    val animatedReceivedSweep by animateFloatAsState(targetValue = receivedSweep, label = "receivedSweep")
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier.size(120.dp)
+    ) {
+        Canvas(modifier = Modifier.size(120.dp)) {
+            // Fondo (track)
+            drawArc(
+                color = Color(0xFF2C2C2E),
+                startAngle = -90f,
+                sweepAngle = 360f,
+                useCenter = false,
+                style = Stroke(width = 14f, cap = StrokeCap.Round)
+            )
+
+            // Tráfico enviado (azul fuerte)
+            drawArc(
+                color = Color(0xFF007AFF),
+                startAngle = -90f,
+                sweepAngle = animatedSentSweep,
+                useCenter = false,
+                style = Stroke(width = 14f, cap = StrokeCap.Round)
+            )
+
+            // Tráfico recibido (celeste, inicia donde termina el enviado)
+            drawArc(
+                color = Color(0xFF5AC8FA),
+                startAngle = -90f + sentSweep,
+                sweepAngle = animatedReceivedSweep,
+                useCenter = false,
+                style = Stroke(width = 14f, cap = StrokeCap.Round)
+            )
+        }
+
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = String.format("%.2f MB", totalMb),
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White
+            )
+            Text(
+                text = "Total",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray
+            )
+        }
+    }
+}
 fun formatMb(bytes: Long): String = "%.2f".format(bytes / (1024f * 1024f))
+fun Long.toMB(): Float = this / (1024f * 1024f)
 
 
 fun formatDuration(durationMillis: Long): String {
