@@ -194,6 +194,7 @@ namespace {
     };
 
     struct SessionInfo {
+        std::chrono::steady_clock::time_point firstSeen{};
         std::chrono::steady_clock::time_point lastSeen{};
         size_t count = 0;
         size_t smallPayloadCount = 0;
@@ -251,6 +252,16 @@ namespace {
             return 0.0;
         }
         return static_cast<double>(numerator) / static_cast<double>(denominator);
+    }
+
+    double sessionDurationMillis(const SessionInfo& session) {
+        if (session.firstSeen.time_since_epoch().count() == 0 ||
+            session.lastSeen.time_since_epoch().count() == 0 ||
+            session.lastSeen <= session.firstSeen) {
+            return 0.0;
+        }
+        return static_cast<double>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(session.lastSeen - session.firstSeen).count());
     }
 
     DnsMinimal parseDns(const uint8_t* data, size_t len) {
@@ -505,10 +516,10 @@ namespace {
         bool sameBurst = seenBefore && (now - info.lastSeen < std::chrono::milliseconds(500));
 
         if (!seenBefore) {
-            info.count = 0;
-            info.smallPayloadCount = 0;
-            info.burstPackets = 0;
-            info.burstSmallPayloads = 0;
+            info = SessionInfo{};
+            info.firstSeen = now;
+        } else if (info.firstSeen.time_since_epoch().count() == 0) {
+            info.firstSeen = (info.lastSeen.time_since_epoch().count() != 0) ? info.lastSeen : now;
         }
 
         if (!sameBurst) {
@@ -607,6 +618,9 @@ namespace {
         double interArrivalStddev = session.interArrivalMs.stddev();
         double smallPayloadRatio = safeRatio(session.smallPayloadCount, session.count);
         double burstSmallRatio = safeRatio(session.burstSmallPayloads, session.burstPackets);
+        double durationMs = sessionDurationMillis(session);
+        bool sustainedWindow = durationMs > 6000.0;
+        double bidirectionalShare = safeRatio(std::min(session.inboundPackets, session.outboundPackets), session.count);
 
         if (ctx.protocol == "TCP") {
             if (ctx.payloadLength == 0 && session.count > 6) {
@@ -624,10 +638,18 @@ namespace {
             }
         }
 
-        if (session.count > 24 && smallPayloadRatio > 0.88 &&
-            interArrivalMean < 120.0 && interArrivalStddev < 18.0) {
-            risk.correlationScore = std::max(risk.correlationScore, 0.82);
-            risk.correlationReason = "Persistent low-latency stream";
+        bool qualifiesLowLatency = session.count > 24 && smallPayloadRatio > 0.88 &&
+                                    interArrivalMean < 120.0 && interArrivalStddev < 18.0;
+        if (qualifiesLowLatency) {
+            if (sustainedWindow && bidirectionalShare > 0.25) {
+                risk.correlationScore = std::max(risk.correlationScore, 0.82);
+                risk.correlationReason = "Persistent low-latency stream";
+            } else if (durationMs > 3500.0 && session.count > 40) {
+                risk.correlationScore = std::max(risk.correlationScore, 0.68);
+                if (risk.correlationReason.empty()) {
+                    risk.correlationReason = "Low-latency session watchlist";
+                }
+            }
         }
 
         if (ctx.entropy > 7.5 && ctx.payloadLength > 200) {
@@ -635,27 +657,57 @@ namespace {
             risk.secondaryReason = "High-entropy payload";
         }
 
-        if (session.count > 12 && smallPayloadRatio > 0.7 && meanPayload < 180.0 && payloadStddev < 60.0) {
-            risk.correlationScore = std::max(risk.correlationScore, 0.82);
-            risk.correlationReason = "Beacon-like session pattern";
+        bool qualifiesBeacon = session.count > 12 && smallPayloadRatio > 0.7 &&
+                               meanPayload < 180.0 && payloadStddev < 60.0;
+        if (qualifiesBeacon) {
+            if (sustainedWindow && bidirectionalShare > 0.2 && durationMs > 5500.0) {
+                risk.correlationScore = std::max(risk.correlationScore, 0.82);
+                risk.correlationReason = "Beacon-like session pattern";
+            } else if (session.count > 28 && durationMs > 3500.0) {
+                risk.correlationScore = std::max(risk.correlationScore, 0.7);
+                if (risk.correlationReason.empty()) {
+                    risk.correlationReason = "Beacon-like cadence detected";
+                }
+            }
         }
 
         if (session.burstPackets > 6 && burstSmallRatio > 0.85 && interArrivalStddev < 15.0) {
-            risk.correlationScore = std::max(risk.correlationScore, 0.84);
-            risk.correlationReason = "Short-burst command channel";
+            if (bidirectionalShare > 0.3 && session.interArrivalMs.n > 4) {
+                risk.correlationScore = std::max(risk.correlationScore, 0.84);
+                risk.correlationReason = "Short-burst command channel";
+            } else if (session.count > 25 && durationMs > 3000.0 && risk.correlationScore < 0.75) {
+                risk.correlationScore = std::max(risk.correlationScore, 0.64);
+                if (risk.correlationReason.empty()) {
+                    risk.correlationReason = "Burst traffic requires review";
+                }
+            }
         }
 
         if (session.totalBytes > 2 * 1024 * 1024 && smallPayloadRatio > 0.55) {
-            risk.primaryScore = std::max(risk.primaryScore, 0.78);
-            if (risk.primaryReason.empty()) {
-                risk.primaryReason = "Sustained transfer with small frames";
+            if (sustainedWindow && bidirectionalShare > 0.2) {
+                risk.primaryScore = std::max(risk.primaryScore, 0.78);
+                if (risk.primaryReason.empty()) {
+                    risk.primaryReason = "Sustained transfer with small frames";
+                }
+            } else if (session.totalBytes > 5 * 1024 * 1024 && durationMs > 4000.0) {
+                risk.primaryScore = std::max(risk.primaryScore, 0.7);
+                if (risk.primaryReason.empty()) {
+                    risk.primaryReason = "Large sustained transfer";
+                }
             }
         }
 
         if (session.interArrivalMs.n > 8 && interArrivalMean < 70.0 &&
             interArrivalStddev < 10.0 && smallPayloadRatio > 0.55) {
-            risk.correlationScore = std::max(risk.correlationScore, 0.84);
-            risk.correlationReason = "Highly periodic session";
+            if (sustainedWindow && bidirectionalShare > 0.25) {
+                risk.correlationScore = std::max(risk.correlationScore, 0.84);
+                risk.correlationReason = "Highly periodic session";
+            } else if (session.count > 36 && durationMs > 3200.0 && risk.correlationScore < 0.78) {
+                risk.correlationScore = std::max(risk.correlationScore, 0.7);
+                if (risk.correlationReason.empty()) {
+                    risk.correlationReason = "Periodic session review";
+                }
+            }
         }
 
         if (ctx.hopLimit != 0 && ctx.hopLimit < 32 && ctx.direction == "inbound") {
@@ -664,16 +716,27 @@ namespace {
         }
 
         if (ctx.direction == "inbound" && session.outboundPackets == 0 && session.count > 8) {
-            risk.secondaryScore = std::max(risk.secondaryScore, 0.66);
-            if (risk.secondaryReason.empty()) {
-                risk.secondaryReason = "Inbound-only unsolicited flow";
+            if (durationMs > 4500.0) {
+                risk.secondaryScore = std::max(risk.secondaryScore, 0.66);
+                if (risk.secondaryReason.empty()) {
+                    risk.secondaryReason = "Inbound-only unsolicited flow";
+                }
+            } else if (risk.secondaryScore < 0.55) {
+                risk.secondaryScore = std::max(risk.secondaryScore, 0.52);
             }
         }
 
         if (ctx.direction == "outbound" && session.inboundPackets == 0 && session.count > 30) {
-            risk.primaryScore = std::max(risk.primaryScore, 0.8);
-            if (risk.primaryReason.empty()) {
-                risk.primaryReason = "Outbound-only persistence";
+            if (durationMs > 7000.0 && smallPayloadRatio > 0.6) {
+                risk.primaryScore = std::max(risk.primaryScore, 0.8);
+                if (risk.primaryReason.empty()) {
+                    risk.primaryReason = "Outbound-only persistence";
+                }
+            } else if (session.count > 45 && durationMs > 4000.0) {
+                risk.primaryScore = std::max(risk.primaryScore, 0.68);
+                if (risk.primaryReason.empty()) {
+                    risk.primaryReason = "Outbound persistence watch";
+                }
             }
         }
 
@@ -749,21 +812,25 @@ namespace {
 
     double calibrateScore(double rawScore, const RiskAssessment& risk, const SessionInfo& session) {
         double adjusted = rawScore;
+        double durationMs = sessionDurationMillis(session);
+        bool hasHistory = session.count > 15 && durationMs > 3500.0;
+        double bidirectionalShare = safeRatio(std::min(session.inboundPackets, session.outboundPackets), session.count);
         if (risk.highRiskConfirmed) {
             adjusted = std::max(adjusted, 0.93);
         }
 
-        if (rawScore >= 0.6) {
-            double sessionBoost = std::min(0.08, safeRatio(session.count, static_cast<size_t>(150)) * 0.4);
+        if (rawScore >= 0.6 && hasHistory) {
+            double sessionBoost = std::min(0.06, safeRatio(session.count, static_cast<size_t>(200)) * 0.25);
             adjusted = std::min(1.0, adjusted + sessionBoost);
         }
 
-        if (rawScore >= 0.7 && session.interArrivalMs.n > 5 && session.interArrivalMs.stddev() < 8.0) {
-            adjusted = std::min(1.0, adjusted + 0.05);
+        if (rawScore >= 0.7 && session.interArrivalMs.n > 5 && session.interArrivalMs.stddev() < 8.0 &&
+            durationMs > 5500.0 && bidirectionalShare > 0.2) {
+            adjusted = std::min(1.0, adjusted + 0.04);
         }
 
-        if (rawScore >= 0.65 && session.totalBytes > 4 * 1024 * 1024) {
-            adjusted = std::min(1.0, adjusted + 0.03);
+        if (rawScore >= 0.65 && session.totalBytes > 4 * 1024 * 1024 && durationMs > 6000.0 && bidirectionalShare > 0.2) {
+            adjusted = std::min(1.0, adjusted + 0.02);
         }
 
         return std::clamp(adjusted, 0.0, 1.0);
@@ -771,14 +838,18 @@ namespace {
 
     double computeConfidence(double calibratedScore, const RiskAssessment& risk, const SessionInfo& session) {
         double confidence = 0.35 + 0.4 * calibratedScore;
+        double durationMs = sessionDurationMillis(session);
         if (risk.highRiskConfirmed) {
             confidence += 0.18;
         }
         if (session.count > 10) {
-            confidence += 0.05;
+            confidence += (durationMs > 4000.0) ? 0.05 : 0.02;
         }
-        if (session.interArrivalMs.n > 3) {
+        if (session.interArrivalMs.n > 3 && durationMs > 3000.0) {
             confidence += 0.04;
+        }
+        if (durationMs < 1500.0 && session.count < 6) {
+            confidence -= 0.05;
         }
         return std::clamp(confidence, 0.0, 1.0);
     }
