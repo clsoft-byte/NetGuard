@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <string>
+#include <vector>
 #include <android/log.h>
 #include "PacketAnalyzer.hpp"
 
@@ -19,24 +20,59 @@ JNIEXPORT jobjectArray JNICALL
 Java_com_clsoft_netguard_engine_network_analyzer_NativeBridge_analyzePackets(
         JNIEnv* env, jclass, jobjectArray packetArray) {
 
+    if (packetArray == nullptr) {
+        jclass stringClass = env->FindClass("java/lang/String");
+        if (stringClass == nullptr) {
+            env->ExceptionClear();
+            return nullptr;
+        }
+        jobjectArray out = env->NewObjectArray(1, stringClass, nullptr);
+        PacketAnalysisResult result = PacketAnalyzer::analyzePacket(std::vector<uint8_t>{});
+        env->SetObjectArrayElement(out, 0, env->NewStringUTF(result.json.c_str()));
+        env->DeleteLocalRef(stringClass);
+        return out;
+    }
+
     jsize count = env->GetArrayLength(packetArray);
     jclass stringClass = env->FindClass("java/lang/String");
+    if (stringClass == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+
     jobjectArray out = env->NewObjectArray(count, stringClass, nullptr);
+    if (out == nullptr) {
+        env->DeleteLocalRef(stringClass);
+        return nullptr;
+    }
 
     for (jsize i = 0; i < count; ++i) {
-        jbyteArray pkt = (jbyteArray) env->GetObjectArrayElement(packetArray, i);
-        if (!pkt) { env->SetObjectArrayElement(out, i, env->NewStringUTF("{\"error\":\"null\"}")); continue; }
+        jbyteArray pkt = static_cast<jbyteArray>(env->GetObjectArrayElement(packetArray, i));
+        if (pkt == nullptr) {
+            PacketAnalysisResult fallback = PacketAnalyzer::analyzePacket(std::vector<uint8_t>{});
+            env->SetObjectArrayElement(out, i, env->NewStringUTF(fallback.json.c_str()));
+            continue;
+        }
 
         jsize len = env->GetArrayLength(pkt);
-        std::string raw;
-        raw.resize(static_cast<size_t>(len));
-        env->GetByteArrayRegion(pkt, 0, len, reinterpret_cast<jbyte*>(&raw[0]));
+        std::vector<uint8_t> buffer(static_cast<size_t>(len));
+        if (len > 0) {
+            env->GetByteArrayRegion(pkt, 0, len, reinterpret_cast<jbyte*>(buffer.data()));
+        }
 
-        std::string json = PacketAnalyzer::analyzePacket(raw);
-        env->SetObjectArrayElement(out, i, env->NewStringUTF(json.c_str()));
+        PacketAnalysisResult analysis = PacketAnalyzer::analyzePacket(buffer);
+        if (!analysis.highRisk) {
+            PacketAnalysisResult verification = PacketAnalyzer::analyzePacket(buffer);
+            if (verification.highRisk) {
+                analysis = verification;
+            }
+        }
 
+        env->SetObjectArrayElement(out, i, env->NewStringUTF(analysis.json.c_str()));
         env->DeleteLocalRef(pkt);
     }
+
+    env->DeleteLocalRef(stringClass);
     return out;
 }
 

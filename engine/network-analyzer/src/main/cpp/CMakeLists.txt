@@ -14,7 +14,13 @@ find_library(
         log
 )
 
+find_library(
+        dl-lib
+        dl
+)
+
 target_link_libraries(
         netguard_native
         ${log-lib}
+        ${dl-lib}
 )

@@ -6,10 +6,16 @@
 #define PACKET_ANALYZER_H
 
 #include <string>
+#include <vector>
+
+struct PacketAnalysisResult {
+    std::string json;
+    bool highRisk = false;
+};
 
 class PacketAnalyzer {
 public:
-    static std::string analyzePacket(const std::string& rawData);
+    static PacketAnalysisResult analyzePacket(const std::vector<uint8_t>& rawData);
 };
 
 #endif

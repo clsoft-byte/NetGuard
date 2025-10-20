@@ -45,13 +45,16 @@ internal object NativeRiskEvaluator {
 
         responses.forEach { raw ->
             val json = runCatching { JSONObject(raw) }.getOrNull() ?: return@forEach
-            val score = json.optDouble("riskScore", Double.NaN)
-            if (!score.isNaN() && score > bestScore) {
-                bestScore = score.toFloat()
+            val scoreValue = json.optDouble("riskScore", Double.NaN)
+            if (!scoreValue.isNaN()) {
+                val clampedScore = scoreValue.coerceIn(0.0, 1.0)
+                if (clampedScore > bestScore) {
+                    bestScore = clampedScore.toFloat()
+                }
             }
 
-            val label = json.optString("riskLabel", "")
-            if (label.isNotBlank() && isHigherPriority(label, bestLabel)) {
+            val label = normalizeLabel(json.optString("riskLabel", ""))
+            if (isHigherPriority(label, bestLabel)) {
                 bestLabel = label
             }
 
@@ -65,6 +68,15 @@ internal object NativeRiskEvaluator {
             score = bestScore,
             blocked = blocked
         )
+    }
+
+    private fun normalizeLabel(value: String): String {
+        return when (value.lowercase()) {
+            "high" -> "High"
+            "medium" -> "Medium"
+            "low" -> "Low"
+            else -> "Low"
+        }
     }
 
     private fun isHigherPriority(candidate: String, current: String): Boolean {
