@@ -624,9 +624,9 @@ namespace {
             }
         }
 
-        if (session.count > 20 && session.smallPayloadCount > 15) {
-            risk.highRiskConfirmed = true;
-            risk.correlationScore = std::max(risk.correlationScore, 0.85);
+        if (session.count > 24 && smallPayloadRatio > 0.88 &&
+            interArrivalMean < 120.0 && interArrivalStddev < 18.0) {
+            risk.correlationScore = std::max(risk.correlationScore, 0.82);
             risk.correlationReason = "Persistent low-latency stream";
         }
 
@@ -652,8 +652,9 @@ namespace {
             }
         }
 
-        if (session.interArrivalMs.n > 5 && interArrivalMean < 80.0 && interArrivalStddev < 12.0) {
-            risk.correlationScore = std::max(risk.correlationScore, 0.88);
+        if (session.interArrivalMs.n > 8 && interArrivalMean < 70.0 &&
+            interArrivalStddev < 10.0 && smallPayloadRatio > 0.55) {
+            risk.correlationScore = std::max(risk.correlationScore, 0.84);
             risk.correlationReason = "Highly periodic session";
         }
 
@@ -752,15 +753,17 @@ namespace {
             adjusted = std::max(adjusted, 0.93);
         }
 
-        double sessionBoost = std::min(0.12, safeRatio(session.count, static_cast<size_t>(120)) * 0.6);
-        adjusted = std::min(1.0, adjusted + sessionBoost);
-
-        if (session.interArrivalMs.n > 5 && session.interArrivalMs.stddev() < 8.0) {
-            adjusted = std::min(1.0, adjusted + 0.08);
+        if (rawScore >= 0.6) {
+            double sessionBoost = std::min(0.08, safeRatio(session.count, static_cast<size_t>(150)) * 0.4);
+            adjusted = std::min(1.0, adjusted + sessionBoost);
         }
 
-        if (session.totalBytes > 4 * 1024 * 1024) {
+        if (rawScore >= 0.7 && session.interArrivalMs.n > 5 && session.interArrivalMs.stddev() < 8.0) {
             adjusted = std::min(1.0, adjusted + 0.05);
+        }
+
+        if (rawScore >= 0.65 && session.totalBytes > 4 * 1024 * 1024) {
+            adjusted = std::min(1.0, adjusted + 0.03);
         }
 
         return std::clamp(adjusted, 0.0, 1.0);
