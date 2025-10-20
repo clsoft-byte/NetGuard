@@ -206,6 +206,9 @@ namespace {
         RunningStats payloadStats;
         RunningStats interArrivalMs;
         std::chrono::steady_clock::time_point previousSeen{};
+        bool likelyTls = false;
+        bool tlsHandshakeSeen = false;
+        std::string lastTlsServerName;
     };
 
     std::mutex gSessionMutex;
@@ -503,10 +506,51 @@ namespace {
         }
     }
 
+    bool looksLikeBenignFqdn(const std::string& host) {
+        if (host.size() < 4) {
+            return false;
+        }
+
+        if (host.front() == '.' || host.back() == '.') {
+            return false;
+        }
+
+        bool hasDot = false;
+        size_t alphaCount = 0;
+        size_t digitCount = 0;
+        size_t otherCount = 0;
+
+        for (unsigned char c : host) {
+            if (c == '.') {
+                hasDot = true;
+            } else if (std::isalpha(c)) {
+                alphaCount++;
+            } else if (std::isdigit(c)) {
+                digitCount++;
+            } else if (c == '-' || c == '_') {
+                otherCount++;
+            } else {
+                return false;
+            }
+        }
+
+        if (!hasDot || alphaCount < 3) {
+            return false;
+        }
+
+        if (digitCount > alphaCount * 2) {
+            return false;
+        }
+
+        if (otherCount > (alphaCount + digitCount)) {
+            return false;
+        }
+
+        return true;
+    }
+
     SessionInfo registerSession(const std::string& key,
-                                size_t payloadLength,
-                                size_t packetLength,
-                                const std::string& direction) {
+                                const PacketContext& ctx) {
         auto now = std::chrono::steady_clock::now();
         std::lock_guard<std::mutex> lock(gSessionMutex);
         cleanupSessionsLocked(now);
@@ -530,25 +574,38 @@ namespace {
         info.count++;
         info.burstPackets++;
 
-        if (payloadLength <= 150) {
+        if (ctx.payloadLength <= 150) {
             info.smallPayloadCount++;
             info.burstSmallPayloads++;
         }
 
-        info.totalBytes += packetLength;
-        if (direction == "inbound") {
+        info.totalBytes += ctx.length;
+        if (ctx.direction == "inbound") {
             info.inboundPackets++;
-        } else if (direction == "outbound") {
+        } else if (ctx.direction == "outbound") {
             info.outboundPackets++;
         }
 
-        info.payloadStats.add(static_cast<double>(payloadLength));
+        info.payloadStats.add(static_cast<double>(ctx.payloadLength));
         if (info.previousSeen.time_since_epoch().count() != 0) {
             auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(now - info.previousSeen);
             info.interArrivalMs.add(static_cast<double>(delta.count()));
         }
         info.previousSeen = now;
         info.lastSeen = now;
+
+        bool tlsPort = (ctx.dstPort == 443 || ctx.dstPort == 8443 || ctx.dstPort == 9443 ||
+                        ctx.srcPort == 443 || ctx.srcPort == 8443 || ctx.srcPort == 9443);
+        if (ctx.protocol == "TCP" && tlsPort) {
+            info.likelyTls = true;
+            if (ctx.tls.parsed && !ctx.tls.malformed) {
+                info.tlsHandshakeSeen = info.tlsHandshakeSeen || ctx.tls.clientHello;
+                if (!ctx.tls.serverName.empty()) {
+                    info.lastTlsServerName = ctx.tls.serverName;
+                }
+            }
+        }
+
         return info;
     }
 
@@ -802,6 +859,66 @@ namespace {
         }
     }
 
+    bool shouldDowngradeTlsHigh(const PacketContext& ctx,
+                                const SessionInfo& session,
+                                const RiskAssessment& risk,
+                                double score) {
+        if (risk.highRiskConfirmed) {
+            return false;
+        }
+
+        if (score < HIGH_RISK_THRESHOLD) {
+            return false;
+        }
+
+        if (!session.likelyTls) {
+            return false;
+        }
+
+        if (!session.tlsHandshakeSeen && !ctx.tls.clientHello) {
+            return false;
+        }
+
+        if (risk.primaryScore >= HIGH_RISK_THRESHOLD || risk.secondaryScore >= HIGH_RISK_THRESHOLD) {
+            return false;
+        }
+
+        if (risk.correlationScore < HIGH_RISK_THRESHOLD) {
+            return false;
+        }
+
+        double durationMs = sessionDurationMillis(session);
+        if (durationMs < 3500.0 || session.count < 15) {
+            return false;
+        }
+
+        double bidirectionalShare = safeRatio(std::min(session.inboundPackets, session.outboundPackets), session.count);
+        if (bidirectionalShare < 0.35) {
+            return false;
+        }
+
+        if (session.smallPayloadCount > session.count * 0.94) {
+            return false;
+        }
+
+        if (session.totalBytes < 64 * 1024) {
+            return false;
+        }
+
+        std::string hostCandidate;
+        if (!ctx.tls.serverName.empty()) {
+            hostCandidate = ctx.tls.serverName;
+        } else {
+            hostCandidate = session.lastTlsServerName;
+        }
+
+        if (hostCandidate.empty() || !looksLikeBenignFqdn(hostCandidate)) {
+            return false;
+        }
+
+        return true;
+    }
+
     double consolidateScore(const RiskAssessment& risk) {
         double score = std::max({risk.primaryScore, risk.secondaryScore, risk.correlationScore});
         if (risk.highRiskConfirmed) {
@@ -1052,7 +1169,7 @@ PacketAnalysisResult PacketAnalyzer::analyzePacket(const std::vector<uint8_t>& r
     const std::string sessionKey = (!ctx.srcIp.empty() || !ctx.dstIp.empty())
                                    ? (ctx.srcIp + "->" + ctx.dstIp + ':' + std::to_string(ctx.dstPort))
                                    : std::string("unknown:") + std::to_string(ctx.dstPort);
-    SessionInfo sessionInfo = registerSession(sessionKey, ctx.payloadLength, ctx.length, ctx.direction);
+    SessionInfo sessionInfo = registerSession(sessionKey, ctx);
 
     applyPortHeuristics(ctx, risk);
     applyDnsHeuristics(ctx, risk);
@@ -1087,6 +1204,13 @@ PacketAnalysisResult PacketAnalyzer::analyzePacket(const std::vector<uint8_t>& r
     double rawScore = consolidateScore(risk);
     double finalScore = calibrateScore(rawScore, risk, sessionInfo);
     std::string label = determineLabel(finalScore, risk);
+    bool downgradedHigh = false;
+
+    if (label == "High" && shouldDowngradeTlsHigh(ctx, sessionInfo, risk, finalScore)) {
+        label = "Medium";
+        finalScore = std::min(finalScore, HIGH_RISK_THRESHOLD - 0.02);
+        downgradedHigh = true;
+    }
 
     if (label != "High" && risk.highRiskConfirmed) {
         label = "High";
@@ -1101,6 +1225,7 @@ PacketAnalysisResult PacketAnalyzer::analyzePacket(const std::vector<uint8_t>& r
 
     bool blocked = label == "High";
     json.kv("blocked", blocked);
+    json.kv("highRiskDowngraded", downgradedHigh);
 
     JsonBuilder assurance;
     assurance.kv("primary", risk.primaryReason.empty() ? "none" : risk.primaryReason);
