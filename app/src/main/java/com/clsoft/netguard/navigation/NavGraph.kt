@@ -29,7 +29,7 @@ fun NavGraph(
             TrafficMonitorScreen(navController = navController)
         }
         composable(BottomNavItem.Firewall.route) {
-            FirewallRulesScreen(navController = navController)
+            FirewallRulesScreen(navController = navController, padding)
         }
         composable(BottomNavItem.Analyzer.route) {
             AnalyzerScreen(navController = navController)

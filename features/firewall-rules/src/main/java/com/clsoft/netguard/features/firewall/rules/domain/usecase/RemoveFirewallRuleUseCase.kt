@@ -1,11 +1,11 @@
 package com.clsoft.netguard.features.firewall.rules.domain.usecase
 
-import com.clsoft.netguard.features.firewall.rules.data.repository.FirewallRulesRepositoryImpl
+import com.clsoft.netguard.features.firewall.rules.domain.repository.FirewallRulesRepository
 import javax.inject.Inject
 
 
 class RemoveFirewallRuleUseCase @Inject constructor(
-    private val repository: FirewallRulesRepositoryImpl
+    private val repository: FirewallRulesRepository
 ) {
-    operator fun invoke(ruleId: String) = repository.removeRule(ruleId)
+    suspend operator fun invoke(ruleId: String) = repository.removeRule(ruleId)
 }

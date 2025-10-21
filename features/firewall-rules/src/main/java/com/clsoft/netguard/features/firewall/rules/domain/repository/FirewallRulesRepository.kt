@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.Flow
 
 interface FirewallRulesRepository {
     fun getRules(): Flow<List<FirewallRule>>
-    fun addRule(appPackage: String, appName: String)
-    fun removeRule(ruleId: String)
-    fun toggleRule(ruleId: String)
+    suspend fun addRule(appPackage: String, appName: String)
+    suspend fun removeRule(ruleId: String)
+    suspend fun toggleRule(ruleId: String)
 }
