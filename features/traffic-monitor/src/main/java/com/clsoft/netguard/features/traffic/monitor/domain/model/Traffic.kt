@@ -12,6 +12,6 @@ data class Traffic(
     val bytesReceived: Long,
     val blocked: Boolean = false,
     val riskScore: Float = 0f,
-    val riskLabel: String? = null,
+    val riskLabel: String,
     val timestamp: Long
 )

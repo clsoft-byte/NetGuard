@@ -39,7 +39,8 @@ fun TrafficMonitorScreen(
         if (query.isBlank()) state.sessions
         else state.sessions.filter {
             it.appPackage.contains(query, ignoreCase = true) ||
-                    it.sourceIp.contains(query, ignoreCase = true)
+                    it.sourceIp.contains(query, ignoreCase = true) ||
+                    it.riskLabel.contains(query, ignoreCase = true)
         }
     }
 
@@ -191,7 +192,7 @@ private fun TrafficItemRow(
 
         Column(horizontalAlignment = Alignment.End) {
             val statusColor = when (item.riskLabel) {
-                "High" -> MediumColor
+                "High" -> HighColor
                 "Medium" -> MediumColor
                 "Low" -> LowColor
                 else -> MediumColor
@@ -228,5 +229,7 @@ private val DividerColor = Color(0x1FFFFFFF)
 private val TextPrimary = Color(0xFFEAEFF7)
 private val TextSecondary = Color(0xFF9AA5B1)
 private val LowColor = Color(0xFF7ED957) // verde suave
-private val MediumColor = Color(0xAEFF9800) // rojo suave
+private val MediumColor = Color(0xAEFF9800) // naranja suave
+private val HighColor = Color(0xE2FF3F3F) // rojo suave
+
 private val SearchBg = Color(0xFF0F141B)

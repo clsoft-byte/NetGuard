@@ -13,7 +13,7 @@ data class TrafficSession(
     val timestamp: Long,
     val blocked: Boolean = false,
     val riskScore: Float = 0f,
-    val riskLabel: String? = null
+    val riskLabel: String
 )
 
 fun TrafficSession.toTraffic(): Traffic = Traffic(
