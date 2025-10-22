@@ -6,6 +6,7 @@ add_library(
         SHARED
         analyzer.cpp
         PacketAnalyzer.cpp
+        FirewallController.cpp
         FirewallBridge.cpp
 )
 

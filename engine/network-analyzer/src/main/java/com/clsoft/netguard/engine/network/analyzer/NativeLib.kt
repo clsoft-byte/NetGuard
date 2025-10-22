@@ -7,6 +7,6 @@ object NativeBridge {
     }
 
     external fun getNativeVersion(): String
-    @JvmStatic external fun analyzePackets(packets: Array<ByteArray>): Array<String>
+    @JvmStatic external fun analyzePackets(packageName: String?, packets: Array<ByteArray>): Array<String>
     external fun applyFirewallRule(packageName: String, allow: Boolean)
 }

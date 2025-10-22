@@ -24,13 +24,13 @@ internal object NativeRiskEvaluator {
         "HIGH" to 2
     )
 
-    fun evaluate(packets: List<ByteArray>): RiskSummary {
+    fun evaluate(appPackage: String?, packets: List<ByteArray>): RiskSummary {
         if (packets.isEmpty()) {
             return RiskSummary.Default
         }
 
         return try {
-            val responses = NativeBridge.analyzePackets(packets.toTypedArray())
+            val responses = NativeBridge.analyzePackets(appPackage, packets.toTypedArray())
             mergeResponses(responses)
         } catch (t: Throwable) {
             Logger.e(TAG, "Native analysis failed", t)
@@ -58,7 +58,7 @@ internal object NativeRiskEvaluator {
                 bestLabel = label
             }
 
-            if (json.optBoolean("blocked", false)) {
+            if (json.optBoolean("blocked", false) || json.optBoolean("firewallBlocked", false)) {
                 blocked = true
             }
         }

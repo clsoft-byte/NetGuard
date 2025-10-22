@@ -1,5 +1,7 @@
 #include "PacketAnalyzer.hpp"
 
+#include "FirewallController.hpp"
+
 #include <algorithm>
 #include <android/log.h>
 #include <array>
@@ -551,7 +553,10 @@ namespace {
 
 } // namespace
 
-PacketAnalysisResult PacketAnalyzer::analyzePacket(const std::vector<uint8_t>& rawData) {
+PacketAnalysisResult PacketAnalyzer::analyzePacket(
+        const std::vector<uint8_t>& rawData,
+        const std::string& packageName
+) {
     PacketAnalysisResult result;
 
     PacketContext ctx = parsePacket(rawData);
@@ -570,6 +575,9 @@ PacketAnalysisResult PacketAnalyzer::analyzePacket(const std::vector<uint8_t>& r
     json.kv("direction", ctx.direction);
     json.kv("payloadBytes", static_cast<int64_t>(ctx.payloadLength));
     json.kv("entropy", ctx.entropy);
+    if (!packageName.empty()) {
+        json.kv("appPackage", packageName);
+    }
     json.kv("hopLimit", static_cast<int64_t>(ctx.hopLimit));
 
     if (ctx.dnsParsed) {
@@ -625,7 +633,14 @@ PacketAnalysisResult PacketAnalyzer::analyzePacket(const std::vector<uint8_t>& r
     json.kv("riskLabel", label);
     json.kv("riskScore", finalScore);
 
-    bool blocked = label == "High";
+    bool blockedByFirewall = !firewall::isAllowed(packageName);
+    if (blockedByFirewall) {
+        __android_log_print(ANDROID_LOG_INFO, LOG_TAG,
+                            "Firewall blocked packet for package %s", packageName.c_str());
+    }
+
+    bool blocked = blockedByFirewall || label == "High";
+    json.kv("firewallBlocked", blockedByFirewall);
     json.kv("blocked", blocked);
 
     JsonBuilder assurance;
@@ -638,5 +653,6 @@ PacketAnalysisResult PacketAnalyzer::analyzePacket(const std::vector<uint8_t>& r
 
     result.json = json.str();
     result.highRisk = (label == "High");
+    result.blockedByFirewall = blockedByFirewall;
     return result;
 }
