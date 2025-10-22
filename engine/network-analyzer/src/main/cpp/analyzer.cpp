@@ -18,7 +18,16 @@ Java_com_clsoft_netguard_engine_network_analyzer_NativeBridge_getNativeVersion(J
 
 JNIEXPORT jobjectArray JNICALL
 Java_com_clsoft_netguard_engine_network_analyzer_NativeBridge_analyzePackets(
-        JNIEnv* env, jclass, jobjectArray packetArray) {
+        JNIEnv* env, jclass, jstring packageName, jobjectArray packetArray) {
+
+    std::string package;
+    if (packageName != nullptr) {
+        const char* packageChars = env->GetStringUTFChars(packageName, nullptr);
+        if (packageChars != nullptr) {
+            package.assign(packageChars);
+            env->ReleaseStringUTFChars(packageName, packageChars);
+        }
+    }
 
     if (packetArray == nullptr) {
         jclass stringClass = env->FindClass("java/lang/String");
@@ -27,7 +36,7 @@ Java_com_clsoft_netguard_engine_network_analyzer_NativeBridge_analyzePackets(
             return nullptr;
         }
         jobjectArray out = env->NewObjectArray(1, stringClass, nullptr);
-        PacketAnalysisResult result = PacketAnalyzer::analyzePacket(std::vector<uint8_t>{});
+        PacketAnalysisResult result = PacketAnalyzer::analyzePacket(std::vector<uint8_t>{}, package);
         env->SetObjectArrayElement(out, 0, env->NewStringUTF(result.json.c_str()));
         env->DeleteLocalRef(stringClass);
         return out;
@@ -49,7 +58,7 @@ Java_com_clsoft_netguard_engine_network_analyzer_NativeBridge_analyzePackets(
     for (jsize i = 0; i < count; ++i) {
         jbyteArray pkt = static_cast<jbyteArray>(env->GetObjectArrayElement(packetArray, i));
         if (pkt == nullptr) {
-            PacketAnalysisResult fallback = PacketAnalyzer::analyzePacket(std::vector<uint8_t>{});
+            PacketAnalysisResult fallback = PacketAnalyzer::analyzePacket(std::vector<uint8_t>{}, package);
             env->SetObjectArrayElement(out, i, env->NewStringUTF(fallback.json.c_str()));
             continue;
         }
@@ -60,9 +69,9 @@ Java_com_clsoft_netguard_engine_network_analyzer_NativeBridge_analyzePackets(
             env->GetByteArrayRegion(pkt, 0, len, reinterpret_cast<jbyte*>(buffer.data()));
         }
 
-        PacketAnalysisResult analysis = PacketAnalyzer::analyzePacket(buffer);
+        PacketAnalysisResult analysis = PacketAnalyzer::analyzePacket(buffer, package);
         if (!analysis.highRisk) {
-            PacketAnalysisResult verification = PacketAnalyzer::analyzePacket(buffer);
+            PacketAnalysisResult verification = PacketAnalyzer::analyzePacket(buffer, package);
             if (verification.highRisk) {
                 analysis = verification;
             }

@@ -44,7 +44,7 @@ internal class TrafficSessionAggregator(
         aggregate.packets += rawPacket
 
         if (aggregate.shouldFlush(now, flushWindowMillis, minBytesBeforeFlush)) {
-            val summary = riskEvaluator.evaluate(aggregate.packets)
+            val summary = riskEvaluator.evaluate(aggregate.normalizedPackage(), aggregate.packets)
             emit(aggregate.toTrafficSession(summary))
             sessions.remove(key)
         }
@@ -54,7 +54,7 @@ internal class TrafficSessionAggregator(
         val iterator = sessions.values.iterator()
         while (iterator.hasNext()) {
             val aggregate = iterator.next()
-            val summary = riskEvaluator.evaluate(aggregate.packets)
+            val summary = riskEvaluator.evaluate(aggregate.normalizedPackage(), aggregate.packets)
             emit(aggregate.toTrafficSession(summary))
             iterator.remove()
         }
@@ -120,6 +120,7 @@ internal class TrafficSessionAggregator(
                 riskLabel = label
             )
         }
+        fun normalizedPackage(): String? = appPackage.takeIf { it.isNotBlank() && it != UNKNOWN_APP }
     }
 
     companion object {

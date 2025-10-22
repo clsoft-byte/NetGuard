@@ -11,11 +11,15 @@
 struct PacketAnalysisResult {
     std::string json;
     bool highRisk = false;
+    bool blockedByFirewall = false;
 };
 
 class PacketAnalyzer {
 public:
-    static PacketAnalysisResult analyzePacket(const std::vector<uint8_t>& rawData);
+    static PacketAnalysisResult analyzePacket(
+        const std::vector<uint8_t>& rawData,
+        const std::string& packageName = ""
+    );
 };
 
 #endif
