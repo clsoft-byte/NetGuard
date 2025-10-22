@@ -3,6 +3,7 @@ package com.clsoft.netguard.core.di
 import android.content.Context
 import androidx.room.Room
 import com.clsoft.netguard.core.database.NetGuardDatabase
+import com.clsoft.netguard.core.database.dao.AnalyzerDao
 import com.clsoft.netguard.core.database.dao.DetectionDao
 import com.clsoft.netguard.core.database.dao.RuleDao
 import com.clsoft.netguard.core.database.dao.TrafficDao
@@ -24,7 +25,7 @@ object DatabaseModule {
             context,
             NetGuardDatabase::class.java,
             "netguard_db",
-        ).build()
+        ).fallbackToDestructiveMigration().build()
     }
 
     @Provides
@@ -38,5 +39,9 @@ object DatabaseModule {
     @Provides
     @Singleton
     fun provideDetectionDao(appDatabase: NetGuardDatabase): DetectionDao = appDatabase.detectionDao()
+
+    @Provides
+    @Singleton
+    fun provideAnalyzerDao(appDatabase: NetGuardDatabase): AnalyzerDao = appDatabase.analyzerDao()
 
 }

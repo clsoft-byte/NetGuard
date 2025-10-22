@@ -53,4 +53,17 @@ interface TrafficDao {
 
     @Query("SELECT * FROM traffic ORDER BY timestamp DESC LIMIT 1")
     fun observeLastSession(): Flow<TrafficEntity?>
+
+    @Query(
+        """
+        SELECT * FROM traffic
+        WHERE appPackage = :appPackage AND destinationIp = :destinationIp
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """
+    )
+    suspend fun findLatestByAppAndDestination(
+        appPackage: String,
+        destinationIp: String
+    ): TrafficEntity?
 }

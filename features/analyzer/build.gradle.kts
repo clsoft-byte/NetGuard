@@ -42,6 +42,7 @@ dependencies {
 
     implementation(project(":core"))
     implementation(project(":framework"))
+    implementation(project(":engine:detector"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

@@ -5,8 +5,7 @@ import kotlinx.coroutines.flow.Flow
 
 interface AnalyzerRepository {
 
-    fun analyze(appPackage: String, destinationIp: String): TrafficRisk
+    suspend fun analyze(appPackage: String, destinationIp: String): TrafficRisk
 
     fun getHistory(): Flow<List<TrafficRisk>>
-
 }

@@ -1,14 +1,14 @@
 package com.clsoft.netguard.features.analyzer.domain.usecase
 
-import com.clsoft.netguard.features.analyzer.data.repository.AnalyzerRepositoryImpl
 import com.clsoft.netguard.features.analyzer.domain.model.TrafficRisk
+import com.clsoft.netguard.features.analyzer.domain.repository.AnalyzerRepository
 import javax.inject.Inject
 
 
 class AnalyzeTrafficUseCase @Inject constructor(
-    private val repository: AnalyzerRepositoryImpl
+    private val repository: AnalyzerRepository
 ) {
-    operator fun invoke(appPackage: String, destinationIp: String): TrafficRisk {
+    suspend operator fun invoke(appPackage: String, destinationIp: String): TrafficRisk {
         return repository.analyze(appPackage, destinationIp)
     }
 }
